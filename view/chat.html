@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sample Messaging App</title>
+  <style>
+    #messages { list-style: none; padding: 0; }
+    #messages li { padding: 4px 0; }
+    #messages li.notice { font-style: italic; }
+    #messages li.notice.join { color: #2e7d32; }
+    #messages li.notice.leave { color: #c62828; }
+    #messages li.private { color: #6a1b9a; background: #f3e5f5; padding: 4px 8px; border-radius: 4px; }
+    #toast {
+      position: fixed; top: 16px; right: 16px;
+      background: #333; color: #fff; padding: 10px 14px;
+      border-radius: 6px; opacity: 0; transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <h1>Real-time Chat</h1>
+  <p>Open this page in two browser tabs. Pick a user in "Send to" to chat privately.</p>
+
+  <p id="status">Connecting...</p>
+  <p>Online: <strong id="online">0</strong> | You are: <strong id="me">...</strong></p>
+
+  <ul id="messages"></ul>
+
+  <form id="chat-form">
+    <label for="recipient">Send to:</label>
+    <select id="recipient">
+      <option value="">Everyone</option>
+    </select>
+    <label for="message">Message:</label>
+    <input id="message" maxlength="2000" autocomplete="off" required>
+    <button type="submit">Send</button>
+  </form>
+
+  <div id="toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const status = document.getElementById("status");
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("message");
+    const messages = document.getElementById("messages");
+    const onlineEl = document.getElementById("online");
+    const meEl = document.getElementById("me");
+    const toast = document.getElementById("toast");
+    const recipient = document.getElementById("recipient");
+
+    let myId = null;
+    let toastTimer;
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 3000);
+    }
+
+    function addItem(text, className) {
+      const item = document.createElement("li");
+      if (className) item.className = className;
+      item.textContent = text;
+      messages.appendChild(item);
+    }
+
+    socket.on("connect", () => { status.textContent = "Connected"; });
+    socket.on("disconnect", () => { status.textContent = "Disconnected"; });
+    socket.on("connect_error", () => { status.textContent = "Connection failed. Retrying..."; });
+    socket.on("message:error", (result) => { status.textContent = result.error; });
+
+    socket.on("welcome", (info) => {
+      myId = info.senderId;
+      meEl.textContent = info.label;
+      onlineEl.textContent = info.online;
+    });
+
+    // Rebuild the "Send to" list whenever users join or leave
+    socket.on("users", (users) => {
+      const previous = recipient.value;
+      recipient.innerHTML = '<option value="">Everyone</option>';
+      users
+        .filter((u) => u.id !== myId)
+        .forEach((u) => {
+          const opt = document.createElement("option");
+          opt.value = u.id;
+          opt.textContent = u.label;
+          recipient.appendChild(opt);
+        });
+      // Keep the selection if that user is still online
+      recipient.value = [...recipient.options].some((o) => o.value === previous) ? previous : "";
+    });
+
+    socket.on("notification", (note) => {
+      if (note.type === "join" || note.type === "leave") {
+        onlineEl.textContent = note.online;
+        addItem(note.text, `notice ${note.type}`);
+      }
+      // Private notifications show as a popup only
+      showToast(note.text);
+    });
+
+    socket.on("message", (message) => {
+      addItem(`${message.label}: ${message.text}`);
+    });
+
+    // Private message: only the sender and recipient receive this
+    socket.on("private:message", (m) => {
+      addItem(`🔒 ${m.fromLabel} → ${m.toLabel}: ${m.text}`, "private");
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!socket.connected) {
+        status.textContent = "Not connected. Please wait and try again.";
+        return;
+      }
+      if (!input.value.trim()) {
+        status.textContent = "Please enter a message.";
+        return;
+      }
+
+      const onResult = (res) => {
+        if (!res.success) status.textContent = res.error;
+      };
+
+      if (recipient.value) {
+        socket.emit("private:message", { to: recipient.value, text: input.value }, onResult);
+      } else {
+        socket.emit("message", input.value, onResult);
+      }
+
+      input.value = "";
+      status.textContent = "Connected";
+    });
+  </script>
+
+</body>
+</html>
